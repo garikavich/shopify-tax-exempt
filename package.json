@@ -1,0 +1,6 @@
+{
+  "name": "shopify-b2b-proxy",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" }
+}
