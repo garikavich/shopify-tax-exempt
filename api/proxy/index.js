@@ -6,38 +6,44 @@ const VERSION = process.env.SHOPIFY_API_VERSION || "2025-07";
 const APP_SECRET = process.env.SHOPIFY_API_SECRET;
 const DISABLE_SIG = process.env.DISABLE_PROXY_SIGNATURE === "1";
 
-// --- NEW: строгая верификация по сырой строке
+// ===== Strict verify based on *raw* query and dynamic path_prefix =====
 function verifyProxySignature(reqUrl) {
   if (DISABLE_SIG) return true;
 
-  // reqUrl типа "/api/proxy?ping=1&signature=abc&foo=2" или "/api/proxy/?..."
   const qIndex = reqUrl.indexOf("?");
   const rawQuery = qIndex === -1 ? "" : reqUrl.slice(qIndex + 1);
 
-  // вытащим присланную подпись и уберём её из query как есть (без декодирования/сортировки)
   let sentSig = "";
-  const filteredParts = [];
+  let pathPrefixEnc = "";
+  const kept = [];
+
   for (const part of rawQuery.split("&").filter(Boolean)) {
     if (part.startsWith("signature=")) {
       sentSig = part.slice("signature=".length);
     } else {
-      filteredParts.push(part);
+      kept.push(part);
+      if (part.startsWith("path_prefix=")) {
+        pathPrefixEnc = part.slice("path_prefix=".length);
+      }
     }
   }
-  const qsNoSig = filteredParts.join("&");
 
-  // Shopify может вызывать как /apps/b2b-vat, так и /apps/b2b-vat/
+  const qsNoSig = kept.join("&");
+  const pathPrefix = decodeURIComponent(pathPrefixEnc || "/apps/b2b-vat");
+
+  // Shopify может проксировать как без, так и с хвостовым слэшем
   const candidates = [
-    "/apps/b2b-vat" + (qsNoSig ? `?${qsNoSig}` : ""),
-    "/apps/b2b-vat/" + (qsNoSig ? `?${qsNoSig}` : ""),
+    pathPrefix + (qsNoSig ? `?${qsNoSig}` : ""),
+    (pathPrefix.endsWith("/") ? pathPrefix : pathPrefix + "/") + (qsNoSig ? `?${qsNoSig}` : ""),
   ];
 
-  const expectedMatches = candidates.some((s) => {
+  // Временный лог на один прогон — посмотреть, каким по факту считается HMAC
+  // console.log({ reqUrl, pathPrefix, qsNoSig, candidates, sentSig });
+
+  return candidates.some((s) => {
     const digest = crypto.createHmac("sha256", APP_SECRET).update(s).digest("hex");
-    return sentSig && sentSig.toLowerCase() === digest;
+    return sentSig && sentSig === digest;
   });
-  console.log({ reqUrl, qsNoSig, candidates, sentSig });
-  return expectedMatches;
 }
 
 async function adminGraphql(query, variables) {
@@ -50,14 +56,11 @@ async function adminGraphql(query, variables) {
 }
 
 export default async function handler(req, res) {
-  // разберём URL один раз
   const url = new URL(`https://${SHOP}${req.url}`);
 
-  // ping — быстро проверяем подпись/маршрут
+  // healthcheck/ping через Proxy (удобно для быстрой проверки)
   if (url.searchParams.get("ping") === "1") {
-    if (!verifyProxySignature(req.url)) {
-      return res.status(401).json({ ok: false, message: "Bad signature" });
-    }
+    if (!verifyProxySignature(req.url)) return res.status(401).json({ ok: false, message: "Bad signature" });
     return res.json({ ok: true });
   }
 
