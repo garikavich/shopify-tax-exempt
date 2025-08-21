@@ -38,7 +38,7 @@ function verifyProxySignature(reqUrl) {
   ];
 
   // Временный лог на один прогон — посмотреть, каким по факту считается HMAC
-  // console.log({ reqUrl, pathPrefix, qsNoSig, candidates, sentSig });
+  console.log({ reqUrl, pathPrefix, qsNoSig, candidates, sentSig });
 
   return candidates.some((s) => {
     const digest = crypto.createHmac("sha256", APP_SECRET).update(s).digest("hex");
