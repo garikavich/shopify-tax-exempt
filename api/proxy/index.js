@@ -36,7 +36,7 @@ function verifyProxySignature(reqUrl) {
     const digest = crypto.createHmac("sha256", APP_SECRET).update(s).digest("hex");
     return sentSig && sentSig.toLowerCase() === digest;
   });
-
+  console.log({ reqUrl, qsNoSig, candidates, sentSig });
   return expectedMatches;
 }
 
