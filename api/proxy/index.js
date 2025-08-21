@@ -4,7 +4,7 @@ const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const VERSION = process.env.SHOPIFY_API_VERSION || "2025-07";
 const APP_SECRET = process.env.SHOPIFY_API_SECRET;
-const DISABLE_SIG = process.env.DISABLE_PROXY_SIGNATURE;
+const DISABLE_SIG = process.env.DISABLE_PROXY_SIGNATURE === "1";
 
 // --- verify signature: raw order + sorted-order fallback
 function verifyProxySignature(reqUrl) {
