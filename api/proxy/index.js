@@ -54,6 +54,14 @@ async function adminGraphql(query, variables) {
 }
 
 export default async function handler(req, res) {
+  console.log('proxy hit:', req.method, req.url);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
   // healthcheck через App Proxy
   if (req.url.includes("ping=1")) {
     return verifyProxySignature(req.url)
