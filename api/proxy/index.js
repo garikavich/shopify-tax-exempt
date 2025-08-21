@@ -8,12 +8,20 @@ const DISABLE_SIG = process.env.DISABLE_PROXY_SIGNATURE === "1";
 
 function verifyProxySignature(url) {
   if (DISABLE_SIG) return true;
+
   const u = new URL(url, `https://${SHOP}`);
-  const sig = u.searchParams.get("signature");
+  const signature = u.searchParams.get("signature");
   u.searchParams.delete("signature");
-  const msg = u.pathname + (u.searchParams.toString() ? `?${u.searchParams}` : "");
-  const expected = crypto.createHmac("sha256", APP_SECRET).update(msg).digest("hex");
-  return sig && sig === expected;
+  const qs = u.searchParams.toString();
+
+  // HMAC должен считаться по исходному пути на стороне магазина:
+  const pathFromShopify = "/apps/b2b-vat" + (qs ? `?${qs}` : "");
+
+  const expected = crypto.createHmac("sha256", APP_SECRET)
+    .update(pathFromShopify)
+    .digest("hex");
+
+  return signature && signature === expected;
 }
 
 async function adminGraphql(query, variables) {
@@ -26,6 +34,8 @@ async function adminGraphql(query, variables) {
 }
 
 export default async function handler(req, res) {
+  const ping = url.searchParams.get("ping") === "1";
+if (ping) return res.json({ ok: true });
   if (!verifyProxySignature(req.url)) return res.status(401).json({ ok:false, message:"Bad signature" });
 
   const url = new URL(`https://${SHOP}${req.url}`);
