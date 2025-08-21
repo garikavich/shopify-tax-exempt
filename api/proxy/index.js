@@ -3,35 +3,41 @@ import crypto from "crypto";
 const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const VERSION = process.env.SHOPIFY_API_VERSION || "2025-07";
-const APP_SECRET = process.env.SHOPIFY_API_SECRET; // из Partner → API access
+const APP_SECRET = process.env.SHOPIFY_API_SECRET;
 const DISABLE_SIG = process.env.DISABLE_PROXY_SIGNATURE === "1";
 
+// --- NEW: строгая верификация по сырой строке
 function verifyProxySignature(reqUrl) {
   if (DISABLE_SIG) return true;
 
-  // reqUrl выглядит как: "/api/proxy?foo=1&signature=abc123&bar=2"
+  // reqUrl типа "/api/proxy?ping=1&signature=abc&foo=2" или "/api/proxy/?..."
   const qIndex = reqUrl.indexOf("?");
   const rawQuery = qIndex === -1 ? "" : reqUrl.slice(qIndex + 1);
 
-  // Сохраняем исходный порядок и кодировку параметров
-  const parts = rawQuery.split("&").filter(Boolean);
-
-  // забираем присланную Shopify подпись и убираем её из строки
+  // вытащим присланную подпись и уберём её из query как есть (без декодирования/сортировки)
   let sentSig = "";
-  const filtered = [];
-  for (const p of parts) {
-    if (p.startsWith("signature=")) {
-      sentSig = p.slice("signature=".length);
+  const filteredParts = [];
+  for (const part of rawQuery.split("&").filter(Boolean)) {
+    if (part.startsWith("signature=")) {
+      sentSig = part.slice("signature=".length);
     } else {
-      filtered.push(p);
+      filteredParts.push(part);
     }
   }
+  const qsNoSig = filteredParts.join("&");
 
-  // исходный путь, который Shopify подписывает
-  const stringToSign = "/apps/b2b-vat" + (filtered.length ? "?" + filtered.join("&") : "");
-  const expected = crypto.createHmac("sha256", APP_SECRET).update(stringToSign).digest("hex");
+  // Shopify может вызывать как /apps/b2b-vat, так и /apps/b2b-vat/
+  const candidates = [
+    "/apps/b2b-vat" + (qsNoSig ? `?${qsNoSig}` : ""),
+    "/apps/b2b-vat/" + (qsNoSig ? `?${qsNoSig}` : ""),
+  ];
 
-  return sentSig && sentSig === expected;
+  const expectedMatches = candidates.some((s) => {
+    const digest = crypto.createHmac("sha256", APP_SECRET).update(s).digest("hex");
+    return sentSig && sentSig.toLowerCase() === digest;
+  });
+
+  return expectedMatches;
 }
 
 async function adminGraphql(query, variables) {
@@ -44,9 +50,14 @@ async function adminGraphql(query, variables) {
 }
 
 export default async function handler(req, res) {
-  // ping для быстрой проверки маршрута/подписи
-  if (req.url.includes("ping=1")) {
-    if (!verifyProxySignature(req.url)) return res.status(401).json({ ok: false, message: "Bad signature" });
+  // разберём URL один раз
+  const url = new URL(`https://${SHOP}${req.url}`);
+
+  // ping — быстро проверяем подпись/маршрут
+  if (url.searchParams.get("ping") === "1") {
+    if (!verifyProxySignature(req.url)) {
+      return res.status(401).json({ ok: false, message: "Bad signature" });
+    }
     return res.json({ ok: true });
   }
 
@@ -54,7 +65,6 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, message: "Bad signature" });
   }
 
-  const url = new URL(`https://${SHOP}${req.url}`);
   const enable = url.searchParams.get("enable") === "1";
   const customerId = url.searchParams.get("customerId");
   if (!customerId) return res.status(400).json({ ok: false, message: "customerId required" });
