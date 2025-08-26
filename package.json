@@ -2,5 +2,8 @@
   "name": "shopify-b2b-proxy",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2"
+  }
 }
