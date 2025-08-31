@@ -7,7 +7,7 @@ const VERSION     = process.env.SHOPIFY_API_VERSION || "2025-07";
 const APP_SECRET  = process.env.SHOPIFY_API_SECRET;
 const DISABLE_SIG = process.env.DISABLE_PROXY_SIGNATURE === "1";
 
-// ── HMAC проверки App Proxy (каждая пара отдельно, sort, join(""))
+// --- App Proxy HMAC (только если есть signature в query)
 function verifyProxySignature(reqUrl) {
   if (DISABLE_SIG) return true;
 
@@ -25,14 +25,10 @@ function verifyProxySignature(reqUrl) {
 
   const stringToSign = pairs.sort().join(""); // без разделителей
   const expected = crypto.createHmac("sha256", APP_SECRET).update(stringToSign).digest("hex");
-
-  // Можно оставить лог на время отладки
-  // console.log({ stringToSign, expected, sentSig, match: expected === sentSig });
-
   return sentSig && sentSig === expected;
 }
 
-// ── JWT из Checkout UI Extensions (useSessionToken) → sub = gid://shopify/Customer/<id>
+// --- JWT из Checkout UI (Authorization: Bearer <token>)
 function verifySessionToken(req) {
   const auth = req.headers.authorization || "";
   const m = auth.match(/^Bearer (.+)$/);
@@ -57,51 +53,63 @@ async function adminGraphql(query, variables) {
 }
 
 export default async function handler(req, res) {
-  console.log("proxy hit:", req.method, req.url);
-
-  // CORS для UI extensions (воркер, меняющийся origin)
+  // CORS для UI extensions
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  // HMAC подпись App Proxy (обязательна)
-  if (!verifyProxySignature(req.url)) {
-    return res.status(401).json({ ok: false, message: "Bad signature" });
-  }
-
-  // Базовая гигиена: проверим shop и «свежесть» timestamp (±5 минут)
-  const url = new URL(`https://${SHOP}${req.url}`);
-  const shopParam = url.searchParams.get("shop");
-  const ts = Number(url.searchParams.get("timestamp") || 0);
-  const now = Math.floor(Date.now() / 1000);
-  if (shopParam && shopParam !== SHOP) {
-    return res.status(400).json({ ok: false, message: "Wrong shop" });
-  }
-  if (!ts || Math.abs(now - ts) > 300) {
-    return res.status(400).json({ ok: false, message: "Stale request" });
-  }
-
-  // JWT от Checkout UI (гарантирует корректный customer в claims)
-  const tok = verifySessionToken(req);
-  // Пинг можно допустить и без токена (для отладки), но боевые вызовы — только с токеном
+  const url = new URL(req.url, "https://dummy.local"); // только чтобы распарсить query локально
+  const hasSignature = url.searchParams.has("signature");
   const isPing = url.searchParams.get("ping") === "1";
-  if (!tok && !isPing) {
-    return res.status(401).json({ ok: false, message: "Bad session token" });
+
+  // Режим 1: App Proxy (есть signature)
+  if (hasSignature) {
+    if (!verifyProxySignature(req.url)) {
+      return res.status(401).json({ ok:false, message:"Bad signature" });
+    }
+    if (isPing) return res.json({ ok:true }); // пинг прокси
+    // в прокси-режиме customerId может приходить в query (но лучше не использовать его для чувствительных операций)
+    const customerId = url.searchParams.get("customerId");
+    if (!customerId) return res.status(400).json({ ok:false, message:"customerId required" });
+
+    const enable = url.searchParams.get("enable") === "1";
+    const q = enable
+      ? `mutation($id:ID!){
+           customerAddTaxExemptions(customerId:$id,
+             taxExemptions:[EU_REVERSE_CHARGE_EXEMPTION_RULE]){ userErrors{message } }
+         }`
+      : `mutation($id:ID!){
+           customerRemoveTaxExemptions(customerId:$id,
+             taxExemptions:[EU_REVERSE_CHARGE_EXEMPTION_RULE]){ userErrors{message } }
+         }`;
+
+    const r = await adminGraphql(q, { id: customerId });
+    const errs =
+      r?.data?.customerAddTaxExemptions?.userErrors ||
+      r?.data?.customerRemoveTaxExemptions?.userErrors || [];
+    if (errs.length) return res.status(400).json({ ok:false, message: errs[0].message });
+
+    return res.json({ ok:true });
   }
 
-  if (isPing) {
-    // лёгкий healthcheck
-    return res.json({ ok: true });
+  // Режим 2: Прямой вызов из Checkout UI (JWT)
+  const tok = verifySessionToken(req);
+  if (!tok) {
+    // ping можно разрешить и без токена для простого «живой/неживой» (по желанию)
+    if (isPing) return res.json({ ok:true });
+    return res.status(401).json({ ok:false, message:"Bad session token" });
   }
 
+  if (isPing) return res.json({ ok:true });
+
+  // customerId берём только из токена!
   const customerId = tok?.sub; // gid://shopify/Customer/...
   if (!customerId?.startsWith?.("gid://shopify/Customer/")) {
-    return res.status(400).json({ ok: false, message: "No customer in token" });
+    return res.status(400).json({ ok:false, message:"No customer in token" });
   }
 
   const enable = url.searchParams.get("enable") === "1";
-
   const q = enable
     ? `mutation($id:ID!){
          customerAddTaxExemptions(customerId:$id,
@@ -116,7 +124,7 @@ export default async function handler(req, res) {
   const errs =
     r?.data?.customerAddTaxExemptions?.userErrors ||
     r?.data?.customerRemoveTaxExemptions?.userErrors || [];
-  if (errs.length) return res.status(400).json({ ok: false, message: errs[0].message });
+  if (errs.length) return res.status(400).json({ ok:false, message: errs[0].message });
 
-  return res.json({ ok: true });
+  return res.json({ ok:true });
 }
