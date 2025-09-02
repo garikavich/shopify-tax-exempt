@@ -75,28 +75,31 @@ export default async function handler(req, res) {
     }
 
     const q = `
-      mutation($id: ID!, $taxExempt: Boolean!) {
-        customerUpdate(id: $id, input: { taxExempt: $taxExempt }) {
-          userErrors { field message }
-          customer { id taxExempt }
-        }
-      }`;
-    const r = await adminGraphql(q, { id: customerId, taxExempt: enable });
-const vars = { id: customerId, taxExempt: enable };
-    console.log('[customerUpdate]', {
-  vars,                               // что отправили
-  data: r?.data,                      // полезные данные
-  errors: r?.errors,                  // GraphQL errors (если были)
-  userErrors: r?.data?.customerUpdate?.userErrors
+  mutation($input: CustomerInput!) {
+    customerUpdate(input: $input) {
+      userErrors { field message }
+      customer { id taxExempt }
+    }
+  }
+`;
+
+    const r = await adminGraphql(q, vars);
+const vars = { input: { id: customerId, taxExempt: enable } };
+   console.log('[customerUpdate]', {
+  vars,
+  data: r?.data,
+  errors: r?.errors,
+  userErrors: r?.data?.customerUpdate?.userErrors,
 });
 
     console.log('customerUpdate RAW:', JSON.stringify(r, null, 2));
 
 
-    const errs = r?.data?.customerUpdate?.userErrors || [];
-    if (errs.length) return res.status(400).json({ ok:false, message: errs[0].message });
+    if ((r?.data?.customerUpdate?.userErrors || []).length) {
+  return res.status(400).json({ ok:false, message: r.data.customerUpdate.userErrors[0].message });
+}
 
-    return res.json({ ok:true, taxExempt: r?.data?.customerUpdate?.customer?.taxExempt });
+return res.json({ ok:true, taxExempt: r?.data?.customerUpdate?.customer?.taxExempt });
   }
 
   // 2) Fallback: ping через App Proxy (для отладки)
