@@ -57,53 +57,51 @@ async function adminGraphql(query, variables) {
 }
 
 export default async function handler(req, res) {
-  // CORS для UI extensions (обязательно)
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  // 1) Если пришёл JWT — работаем по прямому домену (без подписи App Proxy)
+  // 1) Путь с JWT (из Checkout UI) — основной
   const tok = verifySessionToken(req);
   if (tok) {
     const url = new URL(`https://${SHOP}${req.url}`);
     const enable = url.searchParams.get("enable") === "1";
 
-    const customerId = tok?.sub; // gid://shopify/Customer/<id>
+    const customerId = tok?.sub; // gid://shopify/Customer/...
     if (!customerId?.startsWith?.("gid://shopify/Customer/")) {
       return res.status(400).json({ ok: false, message: "No customer in token" });
     }
 
-    const q = enable
-      ? `mutation($id:ID!){
-           customerAddTaxExemptions(customerId:$id,
-             taxExemptions:[EU_REVERSE_CHARGE_EXEMPTION_RULE]){ userErrors{message } }
-         }`
-      : `mutation($id:ID!){
-           customerRemoveTaxExemptions(customerId:$id,
-             taxExemptions:[EU_REVERSE_CHARGE_EXEMPTION_RULE]){ userErrors{message } }
-         }`;
+    const q = `
+      mutation($id: ID!, $taxExempt: Boolean!) {
+        customerUpdate(id: $id, input: { taxExempt: $taxExempt }) {
+          userErrors { field message }
+          customer { id taxExempt }
+        }
+      }`;
+    const r = await adminGraphql(q, { id: customerId, taxExempt: enable });
 
-    const r = await adminGraphql(q, { id: customerId });
-    const errs =
-      r?.data?.customerAddTaxExemptions?.userErrors ||
-      r?.data?.customerRemoveTaxExemptions?.userErrors || [];
-    if (errs.length) return res.status(400).json({ ok: false, message: errs[0].message });
+    console.log('[customerUpdate]', {
+  vars,                               // что отправили
+  data: r?.data,                      // полезные данные
+  errors: r?.errors,                  // GraphQL errors (если были)
+  userErrors: r?.data?.customerUpdate?.userErrors
+});
 
-    return res.json({ ok: true });
+    const errs = r?.data?.customerUpdate?.userErrors || [];
+    if (errs.length) return res.status(400).json({ ok:false, message: errs[0].message });
+
+    return res.json({ ok:true, taxExempt: r?.data?.customerUpdate?.customer?.taxExempt });
   }
 
-  // 2) Иначе — это, вероятно, вызов через App Proxy (например, тестовый ping)
+  // 2) Fallback: ping через App Proxy (для отладки)
   if (!verifyProxySignature(req.url)) {
-    return res.status(401).json({ ok: false, message: "Bad signature" });
+    return res.status(401).json({ ok:false, message:"Bad signature" });
   }
-
-  // легкий healthcheck через App Proxy:
   const url = new URL(`https://${SHOP}${req.url}`);
-  if (url.searchParams.get("ping") === "1") {
-    return res.json({ ok: true });
-  }
+  if (url.searchParams.get("ping") === "1") return res.json({ ok:true });
 
-  // Остальные proxied-запросы тут не обрабатываем
-  return res.status(400).json({ ok: false, message: "Use Authorization: Bearer <token>" });
+  return res.status(400).json({ ok:false, message:"Use Authorization: Bearer <token>" });
 }
