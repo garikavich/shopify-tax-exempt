@@ -66,41 +66,65 @@ export default async function handler(req, res) {
   // 1) Путь с JWT (из Checkout UI) — основной
   const tok = verifySessionToken(req);
   if (tok) {
-    const url = new URL(`https://${SHOP}${req.url}`);
-    const enable = url.searchParams.get("enable") === "1";
-
-    const customerId = tok?.sub; // gid://shopify/Customer/...
-    if (!customerId?.startsWith?.("gid://shopify/Customer/")) {
-      return res.status(400).json({ ok: false, message: "No customer in token" });
-    }
-
-    const q = `
-  mutation($input: CustomerInput!) {
-    customerUpdate(input: $input) {
-      userErrors { field message }
-      customer { id taxExempt }
-    }
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, message: "Method Not Allowed" });
   }
-`;
-const vars = { input: { id: customerId, taxExempt: enable } };
+
+  const url = new URL(`https://${SHOP}${req.url}`);
+
+  // ✅ НОРМАЛИЗУЕМ И ПРОВЕРЯЕМ enable
+  // БЫЛО: const enable = url.searchParams.get("enable") === "1";
+  // СТАЛО (строгая валидация):
+  const raw = url.searchParams.get("enable");
+  if (raw == null) {
+    return res.status(400).json({ ok: false, message: "Missing 'enable' (use 1/0 or true/false)" });
+  }
+  const rawLc = String(raw).toLowerCase();
+  if (!["1", "0", "true", "false"].includes(rawLc)) {
+    return res.status(400).json({ ok: false, message: "Invalid 'enable' (use 1/0 or true/false)" });
+  }
+  const enable = rawLc === "1" || rawLc === "true";
+
+  const customerId = tok?.sub; // gid://shopify/Customer/...
+  if (!customerId?.startsWith?.("gid://shopify/Customer/")) {
+    return res.status(400).json({ ok: false, message: "No customer in token" });
+  }
+
+  // 🔁 ОДНОЙ мутацией включаем/выключаем флаг taxExempt
+  const q = `
+    mutation($input: CustomerInput!) {
+      customerUpdate(input: $input) {
+        userErrors { field message }
+        customer { id taxExempt }
+      }
+    }
+  `;
+  const vars = { input: { id: customerId, taxExempt: enable } };
+
+  try {
     const r = await adminGraphql(q, vars);
 
-   console.log('[customerUpdate]', {
-  vars,
-  data: r?.data,
-  errors: r?.errors,
-  userErrors: r?.data?.customerUpdate?.userErrors,
-});
+    // (оставь на время отладки)
+    console.log("[customerUpdate]", {
+      vars,
+      data: r?.data,
+      errors: r?.errors,
+      userErrors: r?.data?.customerUpdate?.userErrors,
+    });
 
-    console.log('customerUpdate RAW:', JSON.stringify(r, null, 2));
+    const errs = r?.data?.customerUpdate?.userErrors || [];
+    if (errs.length) {
+      return res.status(400).json({ ok: false, message: errs[0].message });
+    }
 
-
-    if ((r?.data?.customerUpdate?.userErrors || []).length) {
-  return res.status(400).json({ ok:false, message: r.data.customerUpdate.userErrors[0].message });
-}
-
-return res.json({ ok:true, taxExempt: r?.data?.customerUpdate?.customer?.taxExempt });
+    return res.json({
+      ok: true,
+      taxExempt: r?.data?.customerUpdate?.customer?.taxExempt,
+    });
+  } catch (e) {
+    return res.status(502).json({ ok: false, message: String(e?.message || e) });
   }
+}
 
   // 2) Fallback: ping через App Proxy (для отладки)
   if (!verifyProxySignature(req.url)) {
