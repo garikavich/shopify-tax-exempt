@@ -82,9 +82,9 @@ export default async function handler(req, res) {
     }
   }
 `;
-
-    const r = await adminGraphql(q, vars);
 const vars = { input: { id: customerId, taxExempt: enable } };
+    const r = await adminGraphql(q, vars);
+
    console.log('[customerUpdate]', {
   vars,
   data: r?.data,
