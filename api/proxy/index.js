@@ -82,13 +82,16 @@ export default async function handler(req, res) {
         }
       }`;
     const r = await adminGraphql(q, { id: customerId, taxExempt: enable });
-
+const vars = { id: customerId, taxExempt: enable };
     console.log('[customerUpdate]', {
   vars,                               // что отправили
   data: r?.data,                      // полезные данные
   errors: r?.errors,                  // GraphQL errors (если были)
   userErrors: r?.data?.customerUpdate?.userErrors
 });
+
+    console.log('customerUpdate RAW:', JSON.stringify(r, null, 2));
+
 
     const errs = r?.data?.customerUpdate?.userErrors || [];
     if (errs.length) return res.status(400).json({ ok:false, message: errs[0].message });
